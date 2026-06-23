@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>From saliency maps to biological concepts — glioma interpretability demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;1,400&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1b2130; --ink-soft:#5b6472; --ink-faint:#8a929e;
+    --paper:#f4f3ef; --card:#ffffff; --line:#e4e1d9; --line-soft:#eeece5;
+    --stage:#17101c; --stage-soft:#241a2e; --stage-line:#3a2c45;
+    --hema:#6d4a93;            /* hematoxylin purple — primary */
+    --eosin:#d77fa1;           /* eosin pink — secondary */
+    --concept:#1f9e94;         /* teal — stable, concept-based */
+    --saliency:#cf8a2e;        /* amber — unstable, saliency */
+    --warn:#c0492f;            /* review flag, used sparingly */
+    --display:'Spectral', Georgia, 'Times New Roman', serif;
+    --body:'Inter', system-ui, -apple-system, sans-serif;
+    --data:'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;}
+  body{
+    background:var(--paper); color:var(--ink); font-family:var(--body);
+    line-height:1.55; -webkit-font-smoothing:antialiased;
+    padding:clamp(16px,4vw,40px);
+  }
+  .wrap{max-width:1080px; margin:0 auto;}
+
+  /* ---------- header ---------- */
+  header{border-bottom:1px solid var(--line); padding-bottom:22px; margin-bottom:26px;}
+  .eyebrow{
+    font-family:var(--data); font-size:11px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--hema); margin:0 0 12px;
+  }
+  h1{
+    font-family:var(--display); font-weight:600; font-size:clamp(26px,4.4vw,40px);
+    line-height:1.1; margin:0 0 8px; letter-spacing:-.01em;
+  }
+  .sub{font-size:clamp(15px,2vw,17px); color:var(--ink-soft); max-width:62ch; margin:0;}
+  .byline{margin-top:14px; font-size:13px; color:var(--ink-faint);}
+  .byline b{color:var(--ink); font-weight:600;}
+  .badge{
+    display:inline-block; font-family:var(--data); font-size:10.5px; letter-spacing:.05em;
+    color:#7a4a1f; background:#f6ead6; border:1px solid #e7cfa6;
+    padding:4px 9px; border-radius:999px; margin-top:14px;
+  }
+
+  .intro{font-size:15.5px; color:var(--ink); max-width:70ch; margin:0 0 28px;}
+  .intro .term{ text-decoration:underline; text-decoration-color:var(--line);
+    text-underline-offset:3px; text-decoration-thickness:1px;}
+
+  /* ---------- layout ---------- */
+  .grid{display:grid; grid-template-columns:1.15fr .85fr; gap:24px; align-items:start;}
+  @media (max-width:860px){ .grid{grid-template-columns:1fr;} }
+
+  /* ---------- stage (the slide viewer) ---------- */
+  .stage-card{
+    background:var(--stage); border:1px solid var(--stage-line); border-radius:14px;
+    padding:16px; color:#e9e2ef;
+  }
+  .stage-top{display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:12px;}
+  .stage-label{font-family:var(--data); font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:#b29ec4;}
+  .stage-hint{font-size:11.5px; color:#8d7d9c;}
+  .toolbar{display:flex; flex-wrap:wrap; gap:8px; margin-bottom:14px;}
+  .seg{display:inline-flex; background:var(--stage-soft); border:1px solid var(--stage-line); border-radius:9px; padding:3px;}
+  .seg button{
+    font-family:var(--body); font-size:12.5px; font-weight:500; color:#bcae c9; color:#bcaec9;
+    background:transparent; border:0; padding:6px 13px; border-radius:6px; cursor:pointer;
+    transition:background .15s, color .15s;
+  }
+  .seg button[aria-pressed="true"]{background:#3a2c45; color:#fff;}
+  .seg button:focus-visible{outline:2px solid var(--eosin); outline-offset:1px;}
+  .tbtn{
+    font-family:var(--body); font-size:12.5px; font-weight:500; color:#d6cadf;
+    background:var(--stage-soft); border:1px solid var(--stage-line); padding:7px 12px;
+    border-radius:8px; cursor:pointer; display:inline-flex; align-items:center; gap:7px;
+    transition:background .15s,border-color .15s;
+  }
+  .tbtn:hover{background:#2e2238;}
+  .tbtn:focus-visible{outline:2px solid var(--eosin); outline-offset:1px;}
+  .tbtn .dot{width:9px;height:9px;border-radius:3px;border:1px solid #6a5a78;background:transparent;transition:background .15s,border-color .15s;}
+  .tbtn[aria-pressed="true"]{border-color:var(--saliency);color:#fff;}
+  .tbtn[aria-pressed="true"] .dot{background:var(--saliency);border-color:var(--saliency);}
+
+  .board{
+    display:grid; grid-template-columns:repeat(6,1fr); gap:5px;
+    background:#0e0913; padding:7px; border-radius:10px; position:relative;
+  }
+  .board.noise::after{
+    content:""; position:absolute; inset:7px; border-radius:6px; pointer-events:none;
+    opacity:.16; mix-blend-mode:screen;
+    background-image:repeating-radial-gradient(circle at 30% 40%, #fff 0 .6px, transparent .6px 2px),
+                     repeating-radial-gradient(circle at 70% 65%, #fff 0 .6px, transparent .6px 2.4px);
+  }
+  .tile{position:relative; aspect-ratio:1/1; border-radius:5px; overflow:hidden; cursor:pointer; outline:none;}
+  .tile canvas{position:absolute; inset:0; width:100%; height:100%; display:block;}
+  .tile .heat{position:absolute; inset:0; transition:background .25s; pointer-events:none;}
+  .tile .ring{position:absolute; inset:0; border-radius:5px; pointer-events:none; box-shadow:none; transition:box-shadow .15s;}
+  .tile.sel .ring{box-shadow:inset 0 0 0 2.5px var(--eosin), 0 0 0 2px rgba(215,127,161,.35);}
+  .tile.match .ring{box-shadow:inset 0 0 0 2px var(--hema);}
+  .tile:focus-visible .ring{box-shadow:inset 0 0 0 2.5px #fff;}
+  .tile:hover .ring{box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.5);}
+
+  .legend{display:flex; gap:16px; margin-top:12px; font-size:11.5px; color:#9c8dab; flex-wrap:wrap;}
+  .legend span{display:inline-flex; align-items:center; gap:6px;}
+  .legend i{width:11px;height:11px;border-radius:3px;display:inline-block;}
+
+  /* ---------- report panel ---------- */
+  .report{display:flex; flex-direction:column; gap:16px;}
+  .panel{background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px;}
+  .panel h2{font-family:var(--data); font-size:11px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--ink-faint); margin:0 0 12px; font-weight:500;}
+
+  .dx{font-family:var(--display); font-size:21px; line-height:1.2; font-weight:600; margin:0 0 2px;}
+  .dx-sub{font-size:12.5px; color:var(--ink-soft); margin:0 0 16px;}
+  .conf-row{display:flex; align-items:flex-end; gap:14px; margin-bottom:14px;}
+  .conf-num{font-family:var(--data); font-size:30px; font-weight:500; line-height:1; color:var(--ink);}
+  .conf-lab{font-size:12px; color:var(--ink-soft); padding-bottom:3px;}
+  .meter{height:7px; background:var(--line-soft); border-radius:99px; overflow:hidden;}
+  .meter > i{display:block; height:100%; border-radius:99px; transition:width .35s ease;}
+  .u-row{display:flex; justify-content:space-between; font-size:12px; color:var(--ink-soft); margin:14px 0 6px;}
+  .u-val{font-family:var(--data); color:var(--ink);}
+  .flag{
+    display:flex; gap:9px; align-items:flex-start; margin-top:14px; padding:10px 12px;
+    border-radius:9px; font-size:12.5px; border:1px solid;
+  }
+  .flag.review{background:#fbf0ec; border-color:#eccabf; color:#7e2c1a;}
+  .flag.ok{background:#eef7f5; border-color:#c8e6e0; color:#1c6a62;}
+  .flag b{font-weight:600;}
+  .flag .ic{font-family:var(--data); font-weight:600; margin-top:1px;}
+
+  /* concept bars */
+  .concepts{display:flex; flex-direction:column; gap:9px;}
+  .cbar{
+    display:grid; grid-template-columns:1fr; gap:5px; cursor:pointer; padding:7px 9px;
+    border-radius:8px; border:1px solid transparent; transition:background .12s,border-color .12s;
+  }
+  .cbar:hover{background:var(--line-soft);}
+  .cbar.active{background:#e9f6f4; border-color:#c2e5df;}
+  .cbar:focus-visible{outline:2px solid var(--concept); outline-offset:1px;}
+  .cbar .lab{display:flex; justify-content:space-between; align-items:baseline; font-size:13px;}
+  .cbar .lab .name{font-weight:500;}
+  .cbar .lab .v{font-family:var(--data); font-size:12px; color:var(--ink-soft);}
+  .ctrack{height:6px; background:var(--line-soft); border-radius:99px; overflow:hidden;}
+  .ctrack > i{display:block; height:100%; background:var(--concept); border-radius:99px; transition:width .3s;}
+  .chint{font-size:11.5px; color:var(--ink-faint); margin:10px 0 0;}
+
+  /* stability card — the signature */
+  .stab{background:linear-gradient(180deg,#fbfaf7,#f6f5f1); border:1px solid var(--line);}
+  .stab .pair{display:flex; flex-direction:column; gap:13px; margin-top:4px;}
+  .stab .one{}
+  .stab .one .top{display:flex; justify-content:space-between; align-items:baseline; font-size:12.5px; margin-bottom:5px;}
+  .stab .one .top .nm{font-weight:500;}
+  .stab .one .top .pct{font-family:var(--data); font-size:12px;}
+  .stab .one .top .pct.s{color:var(--saliency);}
+  .stab .one .top .pct.c{color:var(--concept);}
+  .stab .bar{height:8px; background:var(--line-soft); border-radius:99px; overflow:hidden;}
+  .stab .bar > i{display:block;height:100%;border-radius:99px;transition:width .4s ease;}
+  .stab .bar > i.s{background:var(--saliency);}
+  .stab .bar > i.c{background:var(--concept);}
+  .stab .note{font-size:11.5px; color:var(--ink-soft); margin:12px 0 0; line-height:1.5;}
+
+  /* selected region profile */
+  .region .empty{font-size:13px;color:var(--ink-faint);}
+  .miniline{display:flex; align-items:center; gap:8px; font-size:12px; margin:6px 0;}
+  .miniline .mn{width:120px; color:var(--ink-soft);}
+  .miniline .mt{flex:1; height:5px; background:var(--line-soft); border-radius:99px; overflow:hidden;}
+  .miniline .mt>i{display:block;height:100%;background:var(--hema);border-radius:99px;}
+  .miniline .mv{font-family:var(--data); font-size:11px; color:var(--ink-faint); width:34px; text-align:right;}
+  .dominant{font-size:12.5px;margin-top:10px;color:var(--ink-soft);}
+  .dominant b{color:var(--ink);}
+
+  /* retrieval strip */
+  .retr{margin-top:24px;}
+  .retr h2{font-family:var(--data); font-size:11px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--ink-faint); margin:0 0 4px; font-weight:500;}
+  .retr p.note{font-size:13px; color:var(--ink-soft); margin:0 0 14px; max-width:70ch;}
+  .strip{display:grid; grid-template-columns:repeat(4,1fr); gap:12px;}
+  @media (max-width:560px){ .strip{grid-template-columns:repeat(2,1fr);} }
+  .thumb{background:var(--card); border:1px solid var(--line); border-radius:11px; padding:10px;}
+  .thumb .cv{aspect-ratio:1/1; border-radius:7px; overflow:hidden; position:relative; background:#0e0913;}
+  .thumb .cv canvas{position:absolute;inset:0;width:100%;height:100%;}
+  .thumb .meta{margin-top:9px;}
+  .thumb .meta .d{font-size:12.5px; font-weight:500;}
+  .thumb .meta .s{font-family:var(--data); font-size:11px; color:var(--ink-soft);}
+  .strip .placeholder{grid-column:1/-1; font-size:13px; color:var(--ink-faint);
+    border:1px dashed var(--line); border-radius:11px; padding:22px; text-align:center;}
+
+  /* footer */
+  footer{margin-top:36px; padding-top:24px; border-top:1px solid var(--line);}
+  .map{display:grid; grid-template-columns:repeat(3,1fr); gap:18px; margin-bottom:22px;}
+  @media (max-width:720px){ .map{grid-template-columns:1fr;} }
+  .map .m .from{font-family:var(--data); font-size:11px; letter-spacing:.04em; color:var(--ink-faint); text-transform:uppercase;}
+  .map .m .arrow{color:var(--hema); font-size:13px; margin:3px 0;}
+  .map .m .to{font-size:14px; font-weight:500; line-height:1.35;}
+  .map .m p{font-size:12.5px; color:var(--ink-soft); margin:6px 0 0; line-height:1.5;}
+  .fineprint{font-size:12px; color:var(--ink-faint); line-height:1.6; max-width:80ch;}
+  .fineprint b{color:var(--ink-soft); font-weight:600;}
+
+  @media (prefers-reduced-motion: reduce){ *{transition:none !important;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Trustworthy AI · computational pathology</p>
+    <h1>From saliency maps to biological concepts</h1>
+    <p class="sub">An interface concept for making glioma pathology foundation models interpretable — explaining a prediction through the tumour features a pathologist names, and showing which explanations actually hold up.</p>
+    <p class="byline">Prototype by <b>Shreneek Upadhye</b> · interactive demo</p>
+    <span class="badge">Synthetic tissue · transparent stand-in model · not for clinical use</span>
+  </header>
+
+  <p class="intro">
+    A pathology foundation model reads a gigapixel slide and returns a glioma diagnosis, but not <em>why</em>.
+    The usual answer is a <span class="term">saliency map</span> over the image. This page contrasts that with a
+    <span class="term">concept-based explanation</span>: the same prediction broken into named morphological features
+    — cellular density, nuclear atypia, mitotic activity, microvascular proliferation, necrosis. Use the controls to
+    switch views, test how each explanation behaves under a tiny input perturbation, and search for biologically similar regions.
+  </p>
+
+  <div class="grid">
+
+    <!-- STAGE -->
+    <section class="stage-card">
+      <div class="stage-top">
+        <span class="stage-label">Slide region · 6 × 6 tiles</span>
+        <span class="stage-hint">click a tile to inspect &amp; find similar</span>
+      </div>
+
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="Explanation mode">
+          <button id="mode-concept" aria-pressed="true">Concept view</button>
+          <button id="mode-saliency" aria-pressed="false">Saliency view</button>
+        </div>
+        <button id="noise" class="tbtn" aria-pressed="false" title="Add a small, near-imperceptible perturbation to the input">
+          <span class="dot"></span> Inject input noise
+        </button>
+        <button id="sample" class="tbtn" title="Generate a new synthetic case">↻ New sample</button>
+      </div>
+
+      <div class="board" id="board" aria-label="Tissue tiles"></div>
+
+      <div class="legend" id="legend">
+        <span><i style="background:var(--concept)"></i> concept attribution</span>
+        <span><i style="background:var(--saliency)"></i> saliency</span>
+        <span><i style="box-shadow:inset 0 0 0 2px var(--eosin);background:transparent"></i> selected</span>
+        <span><i style="box-shadow:inset 0 0 0 2px var(--hema);background:transparent"></i> similar region</span>
+      </div>
+    </section>
+
+    <!-- REPORT -->
+    <div class="report">
+
+      <section class="panel">
+        <h2>Model output</h2>
+        <p class="dx" id="dx">—</p>
+        <p class="dx-sub" id="dx-sub">aggregated over all tiles</p>
+
+        <div class="conf-row">
+          <span class="conf-num" id="conf">0.00</span>
+          <span class="conf-lab">model confidence</span>
+        </div>
+        <div class="meter"><i id="conf-bar" style="width:0%;background:var(--hema)"></i></div>
+
+        <div class="u-row"><span>Predictive uncertainty</span><span class="u-val" id="unc">0.00</span></div>
+        <div class="meter"><i id="unc-bar" style="width:0%;background:var(--saliency)"></i></div>
+
+        <div class="flag ok" id="flag"><span class="ic">✓</span><span id="flag-text">—</span></div>
+      </section>
+
+      <section class="panel">
+        <h2>Why — concept contributions</h2>
+        <div class="concepts" id="concepts"></div>
+        <p class="chint" id="chint">Click a concept to highlight where it appears on the slide.</p>
+      </section>
+
+      <section class="panel stab">
+        <h2>Stability under input perturbation</h2>
+        <div class="pair">
+          <div class="one">
+            <div class="top"><span class="nm">Saliency map</span><span class="pct s" id="sal-pct">—</span></div>
+            <div class="bar"><i class="s" id="sal-stab" style="width:0%"></i></div>
+          </div>
+          <div class="one">
+            <div class="top"><span class="nm">Concept explanation</span><span class="pct c" id="con-pct">—</span></div>
+            <div class="bar"><i class="c" id="con-stab" style="width:0%"></i></div>
+          </div>
+        </div>
+        <p class="note" id="stab-note">Toggle <b>Inject input noise</b> to perturb the input and measure how much each explanation changes. Smaller is better.</p>
+      </section>
+
+      <section class="panel region">
+        <h2>Selected region</h2>
+        <div id="region-body"><p class="empty">No tile selected. Click a tile on the slide to see its concept profile.</p></div>
+      </section>
+
+    </div>
+  </div>
+
+  <!-- RETRIEVAL -->
+  <section class="retr">
+    <h2>Content-based retrieval</h2>
+    <p class="note">Pick any tile; the model ranks the rest by similarity in concept space and returns the closest regions — a starting point for "show me more tissue that looks like this".</p>
+    <div class="strip" id="strip">
+      <div class="placeholder">Select a tile above to retrieve its most similar regions.</div>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <div class="map">
+      <div class="m">
+        <div class="from">My thesis</div>
+        <div class="arrow">↓</div>
+        <div class="to">Self-supervised ResNet50 → pathology foundation models</div>
+        <p>The same self-supervised representation learning, scaled to gigapixel histology encoders.</p>
+      </div>
+      <div class="m">
+        <div class="from">My thesis</div>
+        <div class="arrow">↓</div>
+        <div class="to">Saliency maps → stable concept attributions</div>
+        <p>I used saliency for explanation; this moves toward explanations that survive perturbation.</p>
+      </div>
+      <div class="m">
+        <div class="from">My thesis</div>
+        <div class="arrow">↓</div>
+        <div class="to">Human-in-the-loop retrieval → similar-region search</div>
+        <p>Content-based retrieval and clinician feedback, carried over to pathology.</p>
+      </div>
+    </div>
+    <p class="fineprint">
+      <b>How this works.</b> All tissue is generated procedurally to mimic H&amp;E staining — there is no patient data.
+      The "model" is a transparent rule over the synthetic concept fields, used only to drive the interface; it is not a trained classifier and makes no diagnostic claim.
+      The point is the interaction design and the research direction, both of which I can implement with real pathology foundation models, datasets, and validated concept annotations.
+      Built as a single self-contained page (HTML · Canvas · vanilla JS).
+    </p>
+  </footer>
+
+</div>
+
+<script>
+"use strict";
+
+/* ---------- small seeded PRNG so a sample is reproducible across redraws ---------- */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const clamp = (x, lo=0, hi=1) => Math.max(lo, Math.min(hi, x));
+const lerp  = (a, b, t) => a + (b - a) * t;
+
+/* ---------- config ---------- */
+const N = 6;                       // grid is N x N
+const RES = 132;                   // internal canvas resolution
+const CONCEPTS = [
+  { key:"cellularity",  label:"Cellular density",            w:0.30 },
+  { key:"atypia",       label:"Nuclear atypia",              w:0.45 },
+  { key:"mitoses",      label:"Mitotic activity",            w:0.55 },
+  { key:"microvascular",label:"Microvascular proliferation", w:0.90 },
+  { key:"necrosis",     label:"Necrosis",                    w:0.90 },
+];
+
+/* ---------- state ---------- */
+let tiles = [];           // {idx,row,col,c:{...},seed,baseSal,sal,canvas}
+let pred = null;          // {label, sub, conf, unc, contrib:{}, review, reason}
+let baseContrib = null;   // contribution vector with no noise (for stability Δ)
+let mode = "concept";     // 'concept' | 'saliency'
+let noiseOn = false;
+let activeConcept = null; // highlighted concept key
+let selected = null;      // selected tile index
+let matches = [];         // retrieval matches (indices)
+
+/* ---------- sample generation ---------- */
+function rand(seed){ return mulberry32(seed)(); }
+
+function generateSample(seedBase){
+  const rng = mulberry32(seedBase);
+  // a tumour "core" and a necrotic focus placed somewhere on the grid
+  const coreR = 1.2 + rng()*1.4, coreC = 1.0 + rng()*3.4, coreRad = 2.0 + rng()*1.2;
+  const necR  = 3.0 + rng()*2.0, necC  = 2.0 + rng()*3.0, necRad  = 0.8 + rng()*0.9;
+  const hasVessels = rng() > 0.25;
+
+  tiles = [];
+  for(let i=0;i<N*N;i++){
+    const row = Math.floor(i/N), col = i%N;
+    const dCore = Math.hypot(row-coreR, col-coreC);
+    const dNec  = Math.hypot(row-necR,  col-necC);
+    const coreInf = clamp(1 - dCore/coreRad);
+    const necInf  = clamp(1 - dNec/necRad);
+
+    const jitter = () => (rng()-0.5)*0.18;
+    let cellularity = clamp(0.25 + 0.6*coreInf - 0.5*necInf + jitter());
+    let atypia      = clamp(0.20 + 0.55*coreInf - 0.2*necInf + jitter());
+    let mitoses     = clamp(0.10 + 0.55*coreInf*coreInf + jitter()*0.8);
+    let necrosis    = clamp(0.05 + 0.9*necInf + jitter()*0.6);
+    let microvascular = clamp(0.05 + (hasVessels ? 0.6*Math.max(coreInf, necInf*0.7) : 0.1) + jitter()*0.7);
+
+    const c = { cellularity, atypia, mitoses, microvascular, necrosis };
+    const seed = (seedBase*131 + i*977) >>> 0;
+    const baseSal = computeBaseSaliency(c, seed);
+    tiles.push({ idx:i, row, col, c, seed, baseSal, sal:baseSal, canvas:null });
+  }
+}
+
+/* a real model's saliency tends to fall where signal is, but is diffuse + noisy */
+function computeBaseSaliency(c, seed){
+  const r = mulberry32(seed ^ 0x9e3779b9);
+  const signal = 0.55*c.cellularity + 0.45*c.atypia;
+  return clamp(0.35*signal + 0.65*r());        // mostly noise — that's the point
+}
+
+/* under a tiny input perturbation, saliency reshuffles a lot... */
+function perturbSaliency(){
+  tiles.forEach(t=>{
+    const r = mulberry32((t.seed*7+Date.now()) >>> 0);
+    t.sal = clamp(0.30*t.baseSal + 0.70*r());
+  });
+}
+function resetSaliency(){ tiles.forEach(t=> t.sal = t.baseSal); }
+
+/* ---------- the transparent stand-in "model" ---------- */
+function mean(key){ return tiles.reduce((s,t)=>s+t.c[key],0)/tiles.length; }
+// Focal aggregation: in glioma grading the *worst* area sets the grade, so
+// necrosis, vessels and mitoses are summarised by their hotspot, not the average.
+function focal(key, k=4){
+  return tiles.map(t=>t.c[key]).sort((a,b)=>b-a).slice(0,k).reduce((s,v)=>s+v,0)/k;
+}
+function aggregate(){
+  return {
+    cellularity:   mean("cellularity"),   // diffuse property
+    atypia:        mean("atypia"),         // diffuse property
+    mitoses:       focal("mitoses"),       // hotspot
+    microvascular: focal("microvascular"), // focal
+    necrosis:      focal("necrosis"),      // focal
+  };
+}
+
+function computePrediction(conceptNoise){
+  const a = aggregate();
+  // optionally perturb the aggregated concepts by a tiny epsilon (concepts stay robust)
+  const m = {};
+  CONCEPTS.forEach(({key})=>{
+    const eps = conceptNoise ? (mulberry32((key.length*101+Date.now())>>>0)()-0.5)*0.04 : 0;
+    m[key] = clamp(a[key]+eps);
+  });
+
+  // contribution of each concept = aggregated activation x its grading weight
+  const contrib = {};
+  CONCEPTS.forEach(({key,w})=>{ contrib[key] = m[key]*w; });
+
+  // transparent decision rule (illustrative, WHO-2021 flavoured)
+  let label, sub;
+  const highGrade = (m.necrosis > 0.45 && m.microvascular > 0.42);
+  const midGrade  = (m.atypia > 0.40 || m.mitoses > 0.42);
+  if(highGrade){ label="Glioblastoma, IDH-wildtype"; sub="CNS WHO grade 4"; }
+  else if(midGrade){ label="Astrocytoma, IDH-mutant"; sub="CNS WHO grade 3"; }
+  else { label="Astrocytoma, IDH-mutant"; sub="CNS WHO grade 2"; }
+
+  // margin = how decisively the *chosen* grade's criteria are met
+  let margin;
+  if(highGrade){
+    margin = Math.min(m.necrosis-0.45, m.microvascular-0.42);          // both > 0 here
+  } else if(midGrade){
+    const trig = Math.min(
+      m.atypia  > 0.40 ? m.atypia-0.40   : 1,
+      m.mitoses > 0.42 ? m.mitoses-0.42  : 1
+    );
+    const toHighGrade = Math.min(0.45-m.necrosis, 0.42-m.microvascular); // headroom below grade 4
+    margin = Math.min(trig, Math.max(0, toHighGrade));
+  } else {
+    margin = Math.min(0.40-m.atypia, 0.42-m.mitoses);                  // both > 0 here
+  }
+  margin = clamp(margin, 0, 0.35);
+  const conf = clamp(0.60 + margin*1.4, 0.60, 0.95);
+  const unc  = clamp(0.45 - margin*1.3, 0.08, 0.45);
+
+  const review = unc > 0.40;
+  const reason = review
+    ? "the prediction sits near a grading boundary"
+    : "concept evidence is consistent across the region";
+  return { label, sub, conf, unc, contrib, review, reason };
+}
+
+/* ---------- tissue rendering (procedural H&E) ---------- */
+function drawTissue(canvas, c, seed){
+  const ctx = canvas.getContext("2d");
+  const S = RES; canvas.width = S; canvas.height = S;
+  const r = mulberry32(seed);
+
+  // eosin background; washes out where necrosis is high
+  const necW = c.necrosis;
+  const bg = {
+    r: lerp(232, 244, necW), g: lerp(196, 226, necW), b: lerp(212, 222, necW)
+  };
+  ctx.fillStyle = `rgb(${bg.r|0},${bg.g|0},${bg.b|0})`;
+  ctx.fillRect(0,0,S,S);
+
+  // faint stromal texture
+  ctx.strokeStyle = "rgba(190,120,150,0.18)"; ctx.lineWidth = 1;
+  for(let i=0;i<6;i++){
+    ctx.beginPath();
+    ctx.moveTo(r()*S, r()*S);
+    ctx.bezierCurveTo(r()*S,r()*S, r()*S,r()*S, r()*S,r()*S);
+    ctx.stroke();
+  }
+
+  // necrotic amorphous patch
+  if(necW > 0.35){
+    const cx=r()*S, cy=r()*S, rad = S*lerp(0.18,0.4,necW);
+    const g = ctx.createRadialGradient(cx,cy,rad*0.2,cx,cy,rad);
+    g.addColorStop(0,"rgba(244,228,222,0.85)");
+    g.addColorStop(1,"rgba(240,214,210,0)");
+    ctx.fillStyle=g; ctx.beginPath(); ctx.arc(cx,cy,rad,0,7); ctx.fill();
+  }
+
+  // microvascular proliferation: vessel-like rings of endothelial nuclei
+  if(c.microvascular > 0.4){
+    const vessels = 1 + Math.round(c.microvascular*1.6);
+    for(let v=0; v<vessels; v++){
+      const vx=lerp(S*0.2,S*0.8,r()), vy=lerp(S*0.2,S*0.8,r()), vr=lerp(10,22,r());
+      ctx.strokeStyle="rgba(214,150,170,0.5)"; ctx.lineWidth=lerp(2,4,r());
+      ctx.beginPath(); ctx.arc(vx,vy,vr,0,7); ctx.stroke();
+      const ring = Math.round(lerp(10,18,c.microvascular));
+      for(let k=0;k<ring;k++){
+        const a = (k/ring)*Math.PI*2 + r()*0.3;
+        const px=vx+Math.cos(a)*vr, py=vy+Math.sin(a)*vr;
+        nucleus(ctx, px, py, 1.6, 0.3, r);
+      }
+    }
+  }
+
+  // tumour nuclei — density = cellularity, size/irregularity = atypia
+  const count = Math.round(lerp(10, 120, c.cellularity) * (1 - 0.55*necW));
+  for(let i=0;i<count;i++){
+    const x=r()*S, y=r()*S;
+    const base = lerp(1.5, 2.6, r());
+    const size = base * (1 + c.atypia*0.9*r());
+    nucleus(ctx, x, y, size, c.atypia, r);
+  }
+
+  // mitotic figures — small dark condensed pairs
+  const mit = Math.round(c.mitoses*6);
+  for(let i=0;i<mit;i++){
+    const x=lerp(S*0.1,S*0.9,r()), y=lerp(S*0.1,S*0.9,r());
+    ctx.fillStyle="rgba(48,18,60,0.92)";
+    ctx.beginPath(); ctx.ellipse(x-1.5,y,2.0,1.3,r()*3,0,7); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x+1.5,y,2.0,1.3,r()*3,0,7); ctx.fill();
+  }
+
+  // subtle edge vignette
+  const vg = ctx.createRadialGradient(S/2,S/2,S*0.35,S/2,S/2,S*0.72);
+  vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(1,"rgba(40,10,40,0.16)");
+  ctx.fillStyle=vg; ctx.fillRect(0,0,S,S);
+}
+
+function nucleus(ctx, x, y, size, atypia, r){
+  // hematoxylin purple, darker + more irregular with atypia
+  const dark = lerp(0.62, 0.92, Math.min(1, atypia + r()*0.3));
+  ctx.fillStyle = `rgba(${lerp(120,84,dark)|0},${lerp(60,34,dark)|0},${lerp(140,96,dark)|0},0.9)`;
+  ctx.beginPath();
+  const rx = size*(1+atypia*0.5*(r()-0.5)), ry = size*(1+atypia*0.5*(r()-0.5));
+  ctx.ellipse(x, y, Math.max(0.8,rx), Math.max(0.8,ry), r()*Math.PI, 0, 7);
+  ctx.fill();
+}
+
+/* ---------- build DOM ---------- */
+const board = document.getElementById("board");
+function buildBoard(){
+  board.innerHTML = "";
+  tiles.forEach(t=>{
+    const el = document.createElement("div");
+    el.className = "tile"; el.tabIndex = 0; el.dataset.idx = t.idx;
+    el.setAttribute("role","button");
+    el.setAttribute("aria-label", "tissue tile "+(t.idx+1));
+    const cv = document.createElement("canvas");
+    const heat = document.createElement("div"); heat.className="heat";
+    const ring = document.createElement("div"); ring.className="ring";
+    el.appendChild(cv); el.appendChild(heat); el.appendChild(ring);
+    board.appendChild(el);
+    t.canvas = cv;
+    drawTissue(cv, t.c, t.seed);
+    el.addEventListener("click", ()=> selectTile(t.idx));
+    el.addEventListener("keydown", e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); selectTile(t.idx);} });
+  });
+}
+
+/* ---------- similarity / retrieval ---------- */
+function conceptVec(t){ return CONCEPTS.map(({key})=>t.c[key]); }
+function dist(a,b){ let s=0; for(let i=0;i<a.length;i++){ const d=a[i]-b[i]; s+=d*d; } return Math.sqrt(s); }
+function retrieve(idx){
+  const q = conceptVec(tiles[idx]);
+  const ranked = tiles.filter(t=>t.idx!==idx)
+    .map(t=>({ idx:t.idx, d:dist(q, conceptVec(t)) }))
+    .sort((a,b)=>a.d-b.d);
+  matches = ranked.slice(0,4).map(x=>x.idx);
+}
+
+function dominantConcept(t){
+  let best=null, bv=-1;
+  CONCEPTS.forEach(({key,label})=>{ if(t.c[key]>bv){ bv=t.c[key]; best=label; } });
+  return best;
+}
+
+/* ---------- render ---------- */
+function render(){
+  // mode buttons
+  document.getElementById("mode-concept").setAttribute("aria-pressed", mode==="concept");
+  document.getElementById("mode-saliency").setAttribute("aria-pressed", mode==="saliency");
+  document.getElementById("noise").setAttribute("aria-pressed", noiseOn);
+  board.classList.toggle("noise", noiseOn);
+
+  // tile overlays
+  tiles.forEach(t=>{
+    const el = board.children[t.idx];
+    const heat = el.querySelector(".heat");
+    let alpha = 0, col = "31,158,148";
+    if(mode==="saliency"){
+      col = "207,138,46"; alpha = t.sal*0.72;
+    } else {
+      col = "31,158,148";
+      if(activeConcept){ alpha = t.c[activeConcept]*0.75; }
+      else { // overall concept attention = weighted evidence, normalised
+        let v=0,wsum=0; CONCEPTS.forEach(({key,w})=>{ v+=t.c[key]*w; wsum+=w; });
+        alpha = (v/wsum)*0.6;
+      }
+    }
+    heat.style.background = `rgba(${col},${alpha.toFixed(3)})`;
+    el.classList.toggle("sel", selected===t.idx);
+    el.classList.toggle("match", matches.includes(t.idx));
+  });
+
+  // prediction panel
+  document.getElementById("dx").textContent = pred.label;
+  document.getElementById("dx-sub").textContent = pred.sub + " · focal features set the grade";
+  document.getElementById("conf").textContent = pred.conf.toFixed(2);
+  document.getElementById("conf-bar").style.width = (pred.conf*100).toFixed(0)+"%";
+  document.getElementById("unc").textContent = pred.unc.toFixed(2);
+  document.getElementById("unc-bar").style.width = (pred.unc*200).toFixed(0)+"%"; // scaled for visibility
+
+  const flag = document.getElementById("flag");
+  const flagText = document.getElementById("flag-text");
+  if(pred.review){
+    flag.className = "flag review";
+    flag.querySelector(".ic").textContent = "!";
+    flagText.innerHTML = "<b>Pathologist review recommended</b> — " + pred.reason + ".";
+  } else {
+    flag.className = "flag ok";
+    flag.querySelector(".ic").textContent = "✓";
+    flagText.innerHTML = "<b>Confident prediction</b> — " + pred.reason + ".";
+  }
+
+  // concept bars
+  const wrap = document.getElementById("concepts");
+  wrap.innerHTML = "";
+  const maxC = Math.max(...Object.values(pred.contrib));
+  CONCEPTS.forEach(({key,label})=>{
+    const v = pred.contrib[key];
+    const div = document.createElement("div");
+    div.className = "cbar" + (activeConcept===key ? " active":"");
+    div.tabIndex = 0; div.setAttribute("role","button");
+    div.innerHTML =
+      '<div class="lab"><span class="name">'+label+'</span><span class="v">'+v.toFixed(2)+'</span></div>'+
+      '<div class="ctrack"><i style="width:'+((v/maxC)*100).toFixed(0)+'%"></i></div>';
+    div.addEventListener("click", ()=>{ activeConcept = (activeConcept===key?null:key); if(activeConcept) mode="concept"; render(); });
+    div.addEventListener("keydown", e=>{ if(e.key==="Enter"||e.key===" "){ e.preventDefault(); div.click(); } });
+    wrap.appendChild(div);
+  });
+  document.getElementById("chint").textContent = activeConcept
+    ? "Showing where “" + CONCEPTS.find(c=>c.key===activeConcept).label + "” drives the prediction. Click again to clear."
+    : "Click a concept to highlight where it appears on the slide.";
+
+  // stability card
+  const sP = document.getElementById("sal-pct"), cP = document.getElementById("con-pct");
+  const sB = document.getElementById("sal-stab"), cB = document.getElementById("con-stab");
+  const note = document.getElementById("stab-note");
+  if(noiseOn){
+    const salD = diffPct(tiles.map(t=>t.baseSal), tiles.map(t=>t.sal));
+    const noisyContrib = computePrediction(true).contrib;
+    const conD = diffPct(CONCEPTS.map(c=>baseContrib[c.key]), CONCEPTS.map(c=>noisyContrib[c.key]));
+    sP.textContent = salD+"% changed"; cP.textContent = conD+"% changed";
+    sB.style.width = salD+"%"; cB.style.width = conD+"%";
+    note.innerHTML = "Same prediction, near-imperceptible input change. The <b>saliency map</b> moved a lot; the <b>concept explanation</b> barely moved — which is the behaviour you want before trusting an explanation clinically.";
+  } else {
+    sP.textContent = "—"; cP.textContent = "—";
+    sB.style.width = "0%"; cB.style.width = "0%";
+    note.innerHTML = "Toggle <b>Inject input noise</b> to perturb the input and measure how much each explanation changes. Smaller is better.";
+  }
+
+  // selected region
+  const rb = document.getElementById("region-body");
+  if(selected===null){
+    rb.innerHTML = '<p class="empty">No tile selected. Click a tile on the slide to see its concept profile.</p>';
+  } else {
+    const t = tiles[selected];
+    let html = "";
+    CONCEPTS.forEach(({key,label})=>{
+      const v=t.c[key];
+      html += '<div class="miniline"><span class="mn">'+label+'</span>'+
+              '<span class="mt"><i style="width:'+(v*100).toFixed(0)+'%"></i></span>'+
+              '<span class="mv">'+v.toFixed(2)+'</span></div>';
+    });
+    html += '<p class="dominant">Dominant feature: <b>'+dominantConcept(t)+'</b></p>';
+    rb.innerHTML = html;
+  }
+
+  renderStrip();
+}
+
+function diffPct(a,b){
+  let num=0, den=0;
+  for(let i=0;i<a.length;i++){ num+=Math.abs(a[i]-b[i]); den+=Math.abs(a[i]); }
+  return Math.min(99, Math.round((num/(den||1))*100));
+}
+
+function renderStrip(){
+  const strip = document.getElementById("strip");
+  if(selected===null || matches.length===0){
+    strip.innerHTML = '<div class="placeholder">Select a tile above to retrieve its most similar regions.</div>';
+    return;
+  }
+  strip.innerHTML = "";
+  matches.forEach((mi)=>{
+    const t = tiles[mi];
+    const card = document.createElement("div"); card.className="thumb";
+    const cvWrap = document.createElement("div"); cvWrap.className="cv";
+    const cv = document.createElement("canvas");
+    cvWrap.appendChild(cv); card.appendChild(cvWrap);
+    const meta = document.createElement("div"); meta.className="meta";
+    const sim = 1 - dist(conceptVec(tiles[selected]), conceptVec(t)) / Math.sqrt(CONCEPTS.length);
+    meta.innerHTML = '<div class="d">'+dominantConcept(t)+'</div><div class="s">similarity '+sim.toFixed(2)+'</div>';
+    card.appendChild(meta);
+    strip.appendChild(card);
+    drawTissue(cv, t.c, t.seed);
+    card.style.cursor="pointer";
+    card.addEventListener("click", ()=> selectTile(mi));
+  });
+}
+
+/* ---------- actions ---------- */
+function selectTile(idx){
+  selected = idx;
+  retrieve(idx);
+  render();
+}
+function recompute(){
+  pred = computePrediction(false);
+  baseContrib = {}; CONCEPTS.forEach(({key})=> baseContrib[key]=pred.contrib[key]);
+}
+
+/* ---------- wire up ---------- */
+document.getElementById("mode-concept").addEventListener("click", ()=>{ mode="concept"; render(); });
+document.getElementById("mode-saliency").addEventListener("click", ()=>{ mode="saliency"; activeConcept=null; render(); });
+document.getElementById("noise").addEventListener("click", ()=>{
+  noiseOn = !noiseOn;
+  if(noiseOn) perturbSaliency(); else resetSaliency();
+  render();
+});
+document.getElementById("sample").addEventListener("click", ()=>{
+  generateSample((Math.random()*1e9)>>>0);
+  buildBoard();
+  selected=null; matches=[]; activeConcept=null; noiseOn=false;
+  recompute();
+  render();
+});
+
+/* ---------- init ---------- */
+generateSample(1663);       // fixed first sample so the page opens the same way (a clear grade-4 case)
+buildBoard();
+recompute();
+render();
+</script>
+</body>
+</html>
